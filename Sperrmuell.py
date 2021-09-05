@@ -19,14 +19,23 @@ import csv
 import geopy
 import folium
 import ratelimit
+import backoff
 
 # Nominatim-basierten Geocoder vorbereiten.
 geolocator = geopy.geocoders.Nominatim(user_agent="Sperrmülltermine Bonn")
+
+# Handler for backoff on the geocode service
+def backoff_handler(details):
+    print(f'        Backing off {details["wait"]:0.1f} seconds after {details["tries"]} tries')
 
 # Nominatim-Aufruffrequenz beschränken. Höchstens ein Aufruf pro Sekunde.
 # Und verzögern wenn dies überschritten wird statt einen Fehler auszulösen.
 @ratelimit.sleep_and_retry
 @ratelimit.limits(1, 1.1)
+@backoff.on_exception(backoff.expo,
+                      geopy.exc.GeocoderServiceError,
+                      on_backoff = backoff_handler,
+                      max_time = 60*60 + 60) # One hour and some
 def rate_limited_geocode(addr):
     return geolocator.geocode(addr, addressdetails = True)
 
@@ -50,7 +59,7 @@ COL_HAUSNUMMER_UNGERADE_BIS = COL_HAUSNUMMER_UNGERADE_AB + 1
 
 # Die Daten sagen 1-9999 bzw 2-9998 wenn die ganze Straße gemeint ist. Um nicht alle vergeblich
 # abzufragen hier eine willkürlich gewählte Obergrenze die auf "ab" aufgeschlagen wird.
-MAX_HAUSNUMMER_FOR_GEOLOCATION = 200
+MAX_HAUSNUMMER_FOR_GEOLOCATION = 100
 
 # Gesamtliste aller Termine leer initialisieren.
 termine = []
@@ -83,7 +92,7 @@ for row in reader:
                     # Wir ignorieren das.
                     pass
 
-# Liste aller Abfuhrtermine als Datei speichern.
+# Liste aller Abfuhrtermine als Textdatei speichern.
 termine.sort()
 with open('Termine.txt', 'w') as f:
     for termin in termine:
@@ -142,32 +151,55 @@ for maptermin in termine:
                         else:
                             hnr += ' ' + row[COL_HAUSNUMMER_GERADE_AB] + '-' + row[COL_HAUSNUMMER_GERADE_BIS]
 
-                        addr = row[COL_STRASSE] + ' ' + hnr +', ' + row[COL_PLZ] + ' ' + row[COL_ORT]
+                        addr = row[COL_STRASSE] + ' ' + hnr +', '
                         
-                        # Wenn wir eine Hausnummer und eine neue Strasse+Hausnummern haben, dann diese Adresse notieren
-                        # und die Hausnummern im Bereich geokodieren. 
+                        if row[COL_PLZ]:
+                            addr +=   row[COL_PLZ] + ' '
+                        
+                        addr += row[COL_ORT]
+                        
+                        # Wenn wir eine Hausnummer und eine neue Strasse+Hausnummer/n haben, dann diesen 
+                        # Adressbereich notieren und die Hausnummern im Bereich geokodieren. 
                         if hnr.strip() and (not addr in adressen):
                             print(addr)
                             adressen.append(addr) 
                             
-                            von = int(row[COL_HAUSNUMMER_UNGERADE_AB]  if row[COL_HAUSNUMMER_UNGERADE_AB]  else row[COL_HAUSNUMMER_GERADE_AB])
-                            bis = int(row[COL_HAUSNUMMER_UNGERADE_BIS] if row[COL_HAUSNUMMER_UNGERADE_BIS] else row[COL_HAUSNUMMER_GERADE_BIS])
+                            def processrange(von, bis):                                
 
-                            for h in range(von, min(von + MAX_HAUSNUMMER_FOR_GEOLOCATION, bis)):
-                                addr = row[COL_STRASSE] + ' ' + str(h) +', ' + row[COL_PLZ] + ' ' + row[COL_ORT]
-                                print('    ' + addr)             
+                                # Suche begrenzen. Nur wenn das Geocoding erfolgreich ist, erweitern wir
+                                # den Suchbereich bis maximal zur bis-Hausnummer.
+                                maxh = von + MAX_HAUSNUMMER_FOR_GEOLOCATION
+
+                                h = von
+                                while h <= maxh:
+                                    addr = row[COL_STRASSE] + ' ' + str(h) +', ' + row[COL_PLZ] + ' ' + row[COL_ORT]
+                                    print('    ' + addr)             
+                                    
+                                    location = rate_limited_geocode(addr)
+                                    if (not location) or (not 'house_number' in location.raw['address']):
+                                        print('        No result from geocoder')
+                                    else:       
+                                        coords = (str(location), location.latitude, location.longitude)
+                                        print('        ' + str(location))
+                                        print('        ' + str(coords))
+
+                                        global coordinates                                            
+                                        if not coords in coordinates:
+                                            # Wir haben neue Koordinaten. In dem Fall sind wir bereit von dieser
+                                            # Hausnummer aus weiter zu suchen. Aber nie weiter als in den Daten
+                                            # spezifiziert. 
+                                            maxh = min(bis, h + MAX_HAUSNUMMER_FOR_GEOLOCATION)
+                                            
+                                            coordinates.append(coords)
+
+                                    h += 2 # Wir sind auf der geraden oder ungeraden Straßenseite. Also in Schritten von 2.           
+                                            
+                            if row[COL_HAUSNUMMER_UNGERADE_AB] and row[COL_HAUSNUMMER_UNGERADE_BIS]:
+                                processrange(int(row[COL_HAUSNUMMER_UNGERADE_AB]), int(row[COL_HAUSNUMMER_UNGERADE_BIS]))
+
+                            if row[COL_HAUSNUMMER_GERADE_AB] and row[COL_HAUSNUMMER_GERADE_BIS]:
+                                processrange(int(row[COL_HAUSNUMMER_GERADE_AB]), int(row[COL_HAUSNUMMER_GERADE_BIS]))
                                 
-                                location = rate_limited_geocode(addr)
-                                if (not location) or (not 'house_number' in location.raw['address']):
-                                    print('        Not encoded')
-                                else:       
-                                    coords = (location.latitude, location.longitude)
-                                    print('        ' + str(location))
-                                    print('        ' + str(coords))
-
-                                    if not coords in coordinates:
-                                        coordinates.append(coords)
-
         # Ordner für den Tag anlegen
         if not os.path.exists(foldername):
             os.mkdir(foldername)            
@@ -175,7 +207,7 @@ for maptermin in termine:
         # Folium-Karte rund um Bonn initialisieren.
         map = folium.Map(
             location = (50.73743, 7.0982068),
-            zoom_start = 12
+            zoom_start = 11
         )
 
         # Kartentitel konfigurieren.
@@ -187,11 +219,13 @@ for maptermin in termine:
         for coords in coordinates:
             folium.Circle(
                 radius = 2,
-                location = coords,
+                location = (coords[1], coords[2]),
                 color = "crimson",
                 fill = True,
                 opacity = 1,
-                fill_opacity = 1
+                fill_opacity = 1,
+                tooltip = coords[0]
+                # popup = coords[0]
             ).add_to(map)
 
         # Karte als Datei speichern.
@@ -208,3 +242,21 @@ for maptermin in termine:
         with open(f'{foldername}\\Adressen.txt', 'w') as f:            
             for adresse in adressen:
                 print(adresse, file = f)
+
+# Liste aller Abfuhrtermine als HTML-Seite mit Links auf die Karte und andere Ausgaben speichern.
+with open('Termine.html', 'w') as f:
+    print(f'<ul>', file = f)
+
+    for termin in termine:
+        foldername = termin.strftime('%Y-%m-%d')
+        
+        if os.path.exists(foldername): # Nur erfolgreich verarbeitete
+            terminstr = termin.strftime('%d.%m.%Y')
+            print(f'  <li>', file = f)
+            print(f'    <span>{terminstr}: </span>', file = f)
+            print(f'    <a href="{foldername}/Karte.html">Karte</a> - ', file = f)
+            print(f'    <a href="{foldername}/Adressen.txt">Adressen</a> - ', file = f)
+            print(f'    <a href="{foldername}/Koordinaten.txt">Koordinaten</a>', file = f)          
+            print(f'  </li>', file = f)
+
+    print(f'</ul>', file = f)
