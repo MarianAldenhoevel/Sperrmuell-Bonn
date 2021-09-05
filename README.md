@@ -2,6 +2,8 @@ TL;DR: Ein Python-Programm zur Geokodierung der Adressen zu Sperrmüll-Abfuhrter
 
 https://qvwx.de/sperrmuell-bonn-2021/Termine.html
 
+![Beispielkarte](https://marian-aldenhoevel.de/wp-content/uploads/2021/09/Sperrmuell.jpg)
+
 # Was ist das?
 
 Die Stadt Bonn bietet ihren Bürgern eine regelmäßige Sperrmüllabfuhr an. Zu diesem Termin stellt man seinen Müll
