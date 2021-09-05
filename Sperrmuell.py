@@ -163,7 +163,7 @@ for maptermin in termine:
                         if hnr.strip() and (not addr in adressen):
                             print(addr)
                             adressen.append(addr) 
-                            
+       
                             def processrange(von, bis):                                
 
                                 # Suche begrenzen. Nur wenn das Geocoding erfolgreich ist, erweitern wir
@@ -199,7 +199,7 @@ for maptermin in termine:
 
                             if row[COL_HAUSNUMMER_GERADE_AB] and row[COL_HAUSNUMMER_GERADE_BIS]:
                                 processrange(int(row[COL_HAUSNUMMER_GERADE_AB]), int(row[COL_HAUSNUMMER_GERADE_BIS]))
-                                
+
         # Ordner für den Tag anlegen
         if not os.path.exists(foldername):
             os.mkdir(foldername)            
@@ -243,8 +243,11 @@ for maptermin in termine:
             for adresse in adressen:
                 print(adresse, file = f)
 
-# Liste aller Abfuhrtermine als HTML-Seite mit Links auf die Karte und andere Ausgaben speichern.
+# Liste aller Abfuhrtermine als HTML-Fragment mit Links auf die Karte und andere Ausgaben speichern.
 with open('Termine.html', 'w') as f:
+    todaystr = datetime.datetime.today().strftime('%d.%m.')
+    yearstr = datetime.datetime.today().strftime('%Y')
+    print(f'<h1>Sperrmülltermine Bonn {yearstr} ab {todaystr}</h1>', file = f)
     print(f'<ul>', file = f)
 
     for termin in termine:
