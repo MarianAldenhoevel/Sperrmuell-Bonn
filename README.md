@@ -1,5 +1,6 @@
 TL;DR: Ein Python-Programm zur Geokodierung der Adressen zu Sperrmüll-Abfuhrterminen der Stadt Bonn
 
+https://qvwx.de/sperrmuell-bonn-2022/Termine.html
 https://qvwx.de/sperrmuell-bonn-2021/Termine.html
 
 ![Beispielkarte](https://marian-aldenhoevel.de/wp-content/uploads/2021/09/Sperrmuell.jpg)
