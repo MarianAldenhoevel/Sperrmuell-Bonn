@@ -16,28 +16,9 @@ import os
 import datetime
 import json
 import csv
-import geopy
 import folium
-import ratelimit
-import backoff
-
-# Geocoder vorbereiten.
-geolocator = geopy.geocoders.Nominatim(user_agent="Sperrmülltermine Bonn")
-
-# Handler for backoff on the geocode service
-def backoff_handler(details):
-    print(f'        Backing off {details["wait"]:0.1f} seconds after {details["tries"]} tries')
-
-# Nominatim-Aufruffrequenz beschränken. Höchstens ein Aufruf pro Sekunde.
-# Und verzögern wenn dies überschritten wird statt einen Fehler auszulösen.
-@ratelimit.sleep_and_retry
-@ratelimit.limits(1, 1.1)
-@backoff.on_exception(backoff.expo,
-                      geopy.exc.GeocoderServiceError,
-                      on_backoff = backoff_handler,
-                      max_time = 60*60 + 60) # One hour and some
-def rate_limited_geocode(addr):
-    return geolocator.geocode(addr, addressdetails = True)
+import re
+import xml.etree.ElementTree as ET
 
 # Einstellungen ab hier:
 
@@ -62,6 +43,129 @@ COL_HAUSNUMMER_UNGERADE_BIS = COL_HAUSNUMMER_UNGERADE_AB + 1
 # Die Daten sagen 1-9999 bzw 2-9998 wenn die ganze Straße gemeint ist. Um nicht alle vergeblich
 # abzufragen hier eine willkürlich gewählte Obergrenze die auf "ab" aufgeschlagen wird.
 MAX_HAUSNUMMER_FOR_GEOLOCATION = 100
+
+# Open Street Map Karte parsen. OSM-Map.xml enthält einen großzügigen Bereich rund um
+# das interessante Gebiet. Wir extrahieren alle Adressen daraus und ordnen jeder eine
+# einzelne Geokoordinate zu.
+#
+# Koordinaten stehen als einzelnes Paar an <node>-Elementen. <way>-Elemente referenzieren
+# Listen von <node>s.
+#
+# Am Ende bilden wir einen Durchschnitt um auf einen einzelnen Punkt einzudampfen.
+nodes = {}
+addresses = {}
+streetranges = {}
+
+print('OSM XML parsen...')
+tree = ET.parse('OSM-Map.xml')
+root = tree.getroot()
+
+print('OSM Adressen extrahieren...')
+def extractAddr(elem):
+    addr = {}
+    for tag in elem.findall('tag'): 
+        if tag.attrib['k'] == 'addr:city':
+            addr['city'] = tag.attrib['v']
+        elif tag.attrib['k'] == 'addr:street':
+            addr['street'] = tag.attrib['v']
+        elif tag.attrib['k'] == 'addr:postcode':
+            addr['postcode'] = tag.attrib['v']
+        elif tag.attrib['k'] == 'addr:housenumber':
+            addr['housenumber'] = tag.attrib['v']
+    return addr
+
+def doAddAddr(addr, nr, coords):    
+    global addresses
+    global streetranges
+
+    a = f'{addr["street"]} {nr}, {addr["postcode"]} {addr["city"]}'
+    if not a in addresses:
+        # Eine frische Adresse.
+        addresses[a] = []
+    
+    # Ein neuer Koordinatenpunkt für eine Adresse.
+    addresses[a] = addresses[a] + coords
+
+    # Hausnummernbereich für diese Straße aktualisieren.
+    if addr["street"] in streetranges:
+        minh, maxh = streetranges[addr["street"]]
+        minh = min(minh, nr)
+        maxh = max(maxh, nr)     
+    else:
+        minh, maxh = (nr, nr)
+        
+    streetranges[addr["street"]] = (minh, maxh)    
+
+def addAddr(addr, coords):
+    parts = re.split(',|;', addr['housenumber'])
+
+    try:
+        for part in parts:
+            part = ''.join(ch for ch in part if ch.isdigit() or ch=='-')
+            h = part.split('-', 2)
+            h = [s for s in h if s]
+            if len(h) == 1:
+                h.append(h[0])
+        
+            if h[0] == h[1]:
+                doAddAddr(addr, int(h[0]), coords)
+            else:
+                for nr in range(int(h[0]), int(h[1])):    
+                    doAddAddr(addr, nr, coords)
+    except:
+        print(f'{addr["street"]} {addr["housenumber"]}, {addr["postcode"]} {addr["city"]}')
+        raise
+    
+def isAddr(addr):
+    return ('street' in addr) and ('housenumber' in addr) and ('postcode' in addr) and ('city' in addr) and (addr['city'] == 'Bonn')
+
+for nodeelem in root.findall('node'):
+    coords = (float(nodeelem.attrib['lat']), float(nodeelem.attrib['lon']))
+    nodes[nodeelem.attrib['id']] = coords
+    addr = extractAddr(nodeelem)    
+    if isAddr(addr):
+        addAddr(addr, [coords])
+
+for wayelem in root.findall('way'):
+    addr = extractAddr(wayelem)    
+    if isAddr(addr):
+        # Alle nodes zum way finden, und deren Koordinaten zu einer Liste zusammenbauen.
+        coords = []
+        ids = []
+        for nodeelem in wayelem.findall('nd'):
+            id = nodeelem.attrib['ref']
+            if not id in ids:
+                ids.append(id)
+                coords.append(nodes[id])
+
+        addAddr(addr, coords)
+
+# Liste der Koordinaten an jeder Addresse mitteln um einen einzelnen Datenpunkt zu erhalten.
+# TODO: Make into a pythonic one-liner :-)
+print('OSM Koordinaten mitteln...')
+for a in addresses.keys():    
+    p = (0.0, 0.0)
+    n = 0
+    for r in addresses[a]:
+        n += 1
+        p = (p[0] +  r[0], p[1] + r[1])
+    p = (p[0] / n, p[1] / n)
+    
+    addresses[a] = p
+
+print('OSM speichere Adressen...')
+ad = list(addresses.keys())
+ad.sort()
+with open(f'OSM-Adressen.txt', 'w') as f:
+    for a in ad:
+        print(a, addresses[a], file = f)
+
+print('OSM speichere Straßen...')
+sr = list(streetranges.keys())
+sr.sort()
+with open(f'OSM-Strassen.txt', 'w') as f:
+    for s in sr:
+        print(s, streetranges[s], file = f)
 
 # Gesamtliste aller Termine leer initialisieren.
 termine = []
@@ -146,66 +250,77 @@ for maptermin in termine:
                     # Ist dies ein Eintrag zum aktuellen Termin?
                     if terminstr == mapterminstr:
                         
-                        # Hausnummern für die Darstellung zusammenbauen.
-                        if row[COL_HAUSNUMMER_UNGERADE_AB] == row[COL_HAUSNUMMER_UNGERADE_BIS]:
-                            hnr = row[COL_HAUSNUMMER_UNGERADE_AB]
-                        else:
-                            hnr = row[COL_HAUSNUMMER_UNGERADE_AB] + '-' + row[COL_HAUSNUMMER_UNGERADE_BIS]
-                        
-                        if row[COL_HAUSNUMMER_GERADE_AB] == row[COL_HAUSNUMMER_GERADE_BIS]:
-                            hnr += ' ' + row[COL_HAUSNUMMER_GERADE_AB]
-                        else:
-                            hnr += ' ' + row[COL_HAUSNUMMER_GERADE_AB] + '-' + row[COL_HAUSNUMMER_GERADE_BIS]
+                        # Schreibweise der Strasse zwischen der Stadt Bonn und OSM anpassen..
+                        strasse = row[COL_STRASSE]
+                        if not strasse in streetranges:
+                            strasse = strasse.replace('str.', 'straße')
+                            strasse = strasse.replace('Str.', 'Straße')
 
-                        addr = row[COL_STRASSE] + ' ' + hnr +', '
-                        
-                        if row[COL_PLZ]:
-                            addr +=   row[COL_PLZ] + ' '
-                        
-                        addr += row[COL_ORT]
-                        
-                        # Wenn wir eine Hausnummer und eine neue Strasse+Hausnummer/n haben, dann diesen 
-                        # Adressbereich notieren und die Hausnummern im Bereich geokodieren. 
-                        if hnr.strip() and (not addr in adressen):
-                            print(addr)
-                            adressen.append(addr) 
-       
-                            def processrange(von, bis):                                
+                        if not strasse in streetranges:
+                            print(f'"{row[COL_STRASSE]}" nicht in OSM Straßenverzeichnis gefunden')
+                        else:                        
+                            # Startwert für die Hausnummer ermitteln.
+                            hnr_ab = streetranges[strasse][0]
+                            if row[COL_HAUSNUMMER_UNGERADE_AB]:
+                                if row[COL_HAUSNUMMER_GERADE_AB]:
+                                    # Ungerade und gerade beide gegeben.
+                                    hnr_ab = max(hnr_ab, min(int(row[COL_HAUSNUMMER_UNGERADE_AB]), int(row[COL_HAUSNUMMER_GERADE_AB])))
+                                else:
+                                    # Nur ungerade gegeben:
+                                    hnr_ab = max(hnr_ab, int(row[COL_HAUSNUMMER_UNGERADE_AB]))
+                            else:
+                                if row[COL_HAUSNUMMER_GERADE_AB]:
+                                    # Nur gerade gegeben.
+                                    hnr_ab = max(hnr_ab, int(row[COL_HAUSNUMMER_GERADE_AB]))
+                                
+                            # Endwert für die Hausnummer ermitteln.
+                            hnr_bis = streetranges[strasse][1]
+                            if row[COL_HAUSNUMMER_UNGERADE_BIS]:
+                                if row[COL_HAUSNUMMER_GERADE_BIS]:
+                                    # Ungerade und gerade beide gegeben.
+                                    hnr_bis = min(hnr_bis, max(int(row[COL_HAUSNUMMER_UNGERADE_BIS]), int(row[COL_HAUSNUMMER_GERADE_BIS])))
+                                else:
+                                    # Nur ungerade gegeben:
+                                    hnr_bis = min(hnr_bis, int(row[COL_HAUSNUMMER_UNGERADE_BIS]))
+                            else:
+                                if row[COL_HAUSNUMMER_GERADE_BIS]:
+                                    # Nur gerade gegeben.
+                                    hnr_bis = min(hnr_bis, int(row[COL_HAUSNUMMER_GERADE_BIS]))
+                            
+                            addr = strasse + ' '
 
-                                # Suche begrenzen. Nur wenn das Geocoding erfolgreich ist, erweitern wir
-                                # den Suchbereich bis maximal zur bis-Hausnummer.
-                                maxh = von + MAX_HAUSNUMMER_FOR_GEOLOCATION
+                            if (hnr_ab == hnr_bis):
+                                addr += str(hnr_ab) + ' '
+                            else:
+                                addr += str(hnr_ab) + '-' + str(hnr_bis) + ' '
 
-                                h = von
-                                while h <= maxh:
-                                    addr = row[COL_STRASSE] + ' ' + str(h) +', ' + row[COL_PLZ] + ' ' + row[COL_ORT]
-                                    print('    ' + addr)             
-                                    
-                                    location = rate_limited_geocode(addr)
-                                                                    
-                                    if (not location) or (not 'house_number' in location.raw['address']):
-                                        print('        No result from geocoder')
-                                    else:       
-                                        coords = (str(location), location.latitude, location.longitude)
-                                        print('        ' + str(location))
-                                        print('        ' + str(coords))
+                            if row[COL_PLZ]:
+                                addr +=   row[COL_PLZ] + ' '
+                            
+                            addr += row[COL_ORT]
 
-                                        global coordinates                                            
+                            # Wenn wir eine Hausnummer und eine neue Strasse+Hausnummer/n haben, dann diesen 
+                            # Adressbereich notieren und die Hausnummern im Bereich geokodieren. 
+                            if not addr in adressen:
+                                print(addr)
+                                adressen.append(addr) 
+        
+                                for hnr in range(hnr_ab, hnr_bis+1):
+                                    addr = strasse + ' ' + str(hnr) +', ' + row[COL_PLZ] + ' ' + row[COL_ORT]
+                                    print('    ' + addr, end = '')             
+                                
+                                    if not addr in addresses:
+                                        print(f' -> not found')
+                                    else:
+                                        location = addresses[addr]
+                                                            
+                                        coords = (addr, location[0], location[1])
+                                        print(' ->', location)
+
                                         if not coords in coordinates:
-                                            # Wir haben neue Koordinaten. In dem Fall sind wir bereit von dieser
-                                            # Hausnummer aus weiter zu suchen. Aber nie weiter als in den Daten
-                                            # spezifiziert. 
-                                            maxh = min(bis, h + MAX_HAUSNUMMER_FOR_GEOLOCATION)
-                                            
                                             coordinates.append(coords)
 
-                                    h += 2 # Wir sind auf der geraden oder ungeraden Straßenseite. Also in Schritten von 2.           
-                                            
-                            if row[COL_HAUSNUMMER_UNGERADE_AB] and row[COL_HAUSNUMMER_UNGERADE_BIS]:
-                                processrange(int(row[COL_HAUSNUMMER_UNGERADE_AB]), int(row[COL_HAUSNUMMER_UNGERADE_BIS]))
-
-                            if row[COL_HAUSNUMMER_GERADE_AB] and row[COL_HAUSNUMMER_GERADE_BIS]:
-                                processrange(int(row[COL_HAUSNUMMER_GERADE_AB]), int(row[COL_HAUSNUMMER_GERADE_BIS]))
+        print(f'Karte anlegen...')
 
         # Ordner für den Tag anlegen
         if not os.path.exists(foldername):
@@ -250,23 +365,24 @@ for maptermin in termine:
             for adresse in adressen:
                 print(adresse, file = f)
 
-# Liste aller Abfuhrtermine als HTML-Fragment mit Links auf die Karte und andere Ausgaben speichern.
-with open(YEAR + '/Termine.html', 'w') as f:
-    todaystr = datetime.datetime.today().strftime('%d.%m.')
-    yearstr = datetime.datetime.today().strftime('%Y')
-    print(f'<h1>Sperrmülltermine Bonn {yearstr} ab {todaystr}</h1>', file = f)
-    print(f'<ul>', file = f)
+        # Liste aller Abfuhrtermine als HTML-Fragment mit Links auf die Karte und andere Ausgaben speichern.
+        # Achtung: Dies schreibt die ganze Liste neu und fügt dabei "nebenbei" den neu geschriebenen Tag hinzu.
+        with open(YEAR + '/Termine.html', 'w') as f:
+            todaystr = datetime.datetime.today().strftime('%d.%m.')
+            yearstr = datetime.datetime.today().strftime('%Y')
+            print(f'<h1>Sperrmülltermine Bonn {yearstr} ab {todaystr}</h1>', file = f)
+            print(f'<ul>', file = f)
 
-    for termin in termine:
-        foldername = YEAR + '/' + termin.strftime('%Y-%m-%d')
-        
-        if os.path.exists(foldername): # Nur erfolgreich verarbeitete
-            terminstr = termin.strftime('%d.%m.%Y')
-            print(f'  <li>', file = f)
-            print(f'    <span>{terminstr}: </span>', file = f)
-            print(f'    <a href="{foldername}/Karte.html">Karte</a> - ', file = f)
-            print(f'    <a href="{foldername}/Adressen.txt">Adressen</a> - ', file = f)
-            print(f'    <a href="{foldername}/Koordinaten.txt">Koordinaten</a>', file = f)          
-            print(f'  </li>', file = f)
+            for termin in termine:
+                foldername = YEAR + '/' + termin.strftime('%Y-%m-%d')
+                
+                if os.path.exists(foldername): # Nur erfolgreich verarbeitete
+                    terminstr = termin.strftime('%d.%m.%Y')
+                    print(f'  <li>', file = f)
+                    print(f'    <span>{terminstr}: </span>', file = f)
+                    print(f'    <a href="{foldername}/Karte.html">Karte</a> - ', file = f)
+                    print(f'    <a href="{foldername}/Adressen.txt">Adressen</a> - ', file = f)
+                    print(f'    <a href="{foldername}/Koordinaten.txt">Koordinaten</a>', file = f)          
+                    print(f'  </li>', file = f)
 
-    print(f'</ul>', file = f)
+            print(f'</ul>', file = f)

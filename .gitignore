@@ -1,7 +1,10 @@
 # Downloaded data:
+OSM-Map.xml
 *.csv
 
 # Artifacts:
 ????-??-??/
 Termine.txt
 Termine.html
+OSM-Adressen.txt
+OSM-Strassen.txt
