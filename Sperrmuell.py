@@ -51,7 +51,14 @@ MAX_HAUSNUMMER_FOR_GEOLOCATION = 100
 # Koordinaten stehen als einzelnes Paar an <node>-Elementen. <way>-Elemente referenzieren
 # Listen von <node>s.
 #
-# Am Ende bilden wir einen Durchschnitt um auf einen einzelnen Punkt einzudampfen.
+# Also lesen wir zuerst alle Nodes. Diejenigen davon, die schon eine Adresse zugeordnet
+# haben kommen direkt in die Liste. Alle werden mit ihren IDs und Koordinaten aufbewahrt.
+#
+# Dann iterieren wir über die Ways. Jeder, der eine Adresse bezeichnet wird als Liste
+# aller seiner ref-Koordinaten abgebildet.
+#
+# Am Ende bilden wir einen Durchschnitt um jede Adresse auf einen einzelnen Punkt 
+# einzudampfen der dann schließlich in der Karte dargestellt werden wird.
 nodes = {}
 addresses = {}
 streetranges = {}
@@ -167,7 +174,7 @@ with open(f'OSM-Strassen.txt', 'w') as f:
     for s in sr:
         print(s, streetranges[s], file = f)
 
-# Gesamtliste aller Termine leer initialisieren.
+# Gesamtliste aller Abfuhr-Termine leer initialisieren.
 termine = []
 
 # CSV einlesen.
@@ -224,7 +231,7 @@ for maptermin in termine:
         # Wenn es den Ordner schon gibt, glauben wir, dass der Termin schon verarbeitet wurde.
         print('Already processed')
     elif maptermin < datetime.datetime.today():
-        # Uns interessiert hier nur die Zukunft
+        # Uns interessiert hier nur die Zukunft.
         print('In the past')
     else:
         print('Processing')
@@ -258,7 +265,12 @@ for maptermin in termine:
 
                         if not strasse in streetranges:
                             print(f'"{row[COL_STRASSE]}" nicht in OSM Straßenverzeichnis gefunden')
-                        else:                        
+                        else:     
+                            # Hausnummernbereiche sind von der Stadt Bonn separat als ungerade und gerade
+                            # Seite spezifiziert. Außerdem werden Platzhalter wie 0 und 9998/9999 verwendet.
+                            # Da wir die OSM-Daten kennen können wir die Bereiche effizienter ausdrücken
+                            # um weniger Geocoder-Misses zu generieren.
+                                               
                             # Startwert für die Hausnummer ermitteln.
                             hnr_ab = streetranges[strasse][0]
                             if row[COL_HAUSNUMMER_UNGERADE_AB]:
@@ -290,8 +302,10 @@ for maptermin in termine:
                             addr = strasse + ' '
 
                             if (hnr_ab == hnr_bis):
+                                # Nur eine Hausnummer
                                 addr += str(hnr_ab) + ' '
                             else:
+                                # Hausnummernbereich
                                 addr += str(hnr_ab) + '-' + str(hnr_bis) + ' '
 
                             if row[COL_PLZ]:
@@ -374,7 +388,7 @@ for maptermin in termine:
             print(f'<ul>', file = f)
 
             for termin in termine:
-                foldername = YEAR + '/' + termin.strftime('%Y-%m-%d')
+                foldername = termin.strftime('%Y-%m-%d')
                 
                 if os.path.exists(foldername): # Nur erfolgreich verarbeitete
                     terminstr = termin.strftime('%d.%m.%Y')
