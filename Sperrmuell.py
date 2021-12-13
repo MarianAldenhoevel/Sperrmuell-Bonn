@@ -21,7 +21,7 @@ import folium
 import ratelimit
 import backoff
 
-# Nominatim-basierten Geocoder vorbereiten.
+# Geocoder vorbereiten.
 geolocator = geopy.geocoders.Nominatim(user_agent="Sperrmülltermine Bonn")
 
 # Handler for backoff on the geocode service
@@ -41,20 +41,22 @@ def rate_limited_geocode(addr):
 
 # Einstellungen ab hier:
 
+YEAR = '2022'
+
 # Dateiname des aktuellen CSV-Downloads:
-CSV_FILENAME = 'ABFUHRTERMINE2021.csv'
+CSV_FILENAME = 'ABFUHRTERMINE2022.csv'
 
 # Spaltenindizes im CSV:
-COL_TYP = 17        # Spalte in der der Abfuhrtyp steht. Wir suchen "Sperrmüll"
-COL_TERMIN_00 = 54  # Spalte in der der erste Abfuhrtermin steht, Annahme: Der Rest nach rechts sind weitere Termine 
+COL_TYP = 14        # Spalte in der der Abfuhrtyp steht. Wir suchen "Sperrmüll"
+COL_TERMIN_00 = 56  # Spalte in der der erste Abfuhrtermin steht, Annahme: Der Rest nach rechts sind weitere Termine 
 
-COL_STRASSE = 31    
-COL_ORT = 32
-COL_PLZ = 34
-COL_HAUSNUMMER_GERADE_AB = 35
+COL_STRASSE = 24    
+COL_ORT = 25
+COL_PLZ = 27
+COL_HAUSNUMMER_GERADE_AB = 28
 COL_HAUSNUMMER_GERADE_BIS = COL_HAUSNUMMER_GERADE_AB + 1
 
-COL_HAUSNUMMER_UNGERADE_AB = 37
+COL_HAUSNUMMER_UNGERADE_AB = 30
 COL_HAUSNUMMER_UNGERADE_BIS = COL_HAUSNUMMER_UNGERADE_AB + 1
 
 # Die Daten sagen 1-9999 bzw 2-9998 wenn die ganze Straße gemeint ist. Um nicht alle vergeblich
@@ -65,6 +67,7 @@ MAX_HAUSNUMMER_FOR_GEOLOCATION = 100
 termine = []
 
 # CSV einlesen.
+print(f'Öffne "{CSV_FILENAME}"...')
 csvfile = open(CSV_FILENAME, newline='')
 reader = csv.reader(csvfile, delimiter=';')
 
@@ -93,8 +96,11 @@ for row in reader:
                     pass
 
 # Liste aller Abfuhrtermine als Textdatei speichern.
+if not os.path.exists(YEAR):
+    os.makedirs(YEAR)            
+
 termine.sort()
-with open('Termine.txt', 'w') as f:
+with open(YEAR + '/Termine.txt', 'w') as f:
     for termin in termine:
         print(termin, file = f)
 
@@ -105,10 +111,10 @@ for maptermin in termine:
 
     # Datum als String in dem Format formatieren in dem es in der CSV-Datei steht.
     mapterminstr = maptermin.strftime('%d.%m.%Y')
-    print(f'{maptermin} -> {mapterminstr}: ', end='')
+    print(f'termin={maptermin} -> maptermin={mapterminstr}: ', end='')
 
     # Ausgabe-Dateinamen mit dem selektieren Termindatum dekorieren.  
-    foldername = maptermin.strftime('%Y-%m-%d')
+    foldername = YEAR + '\\' + maptermin.strftime('%Y-%m-%d')
     
     if os.path.isdir(foldername):
         # Wenn es den Ordner schon gibt, glauben wir, dass der Termin schon verarbeitet wurde.
@@ -176,6 +182,7 @@ for maptermin in termine:
                                     print('    ' + addr)             
                                     
                                     location = rate_limited_geocode(addr)
+                                                                    
                                     if (not location) or (not 'house_number' in location.raw['address']):
                                         print('        No result from geocoder')
                                     else:       
@@ -202,7 +209,7 @@ for maptermin in termine:
 
         # Ordner für den Tag anlegen
         if not os.path.exists(foldername):
-            os.mkdir(foldername)            
+            os.makedirs(foldername)            
 
         # Folium-Karte rund um Bonn initialisieren.
         map = folium.Map(
@@ -244,14 +251,14 @@ for maptermin in termine:
                 print(adresse, file = f)
 
 # Liste aller Abfuhrtermine als HTML-Fragment mit Links auf die Karte und andere Ausgaben speichern.
-with open('Termine.html', 'w') as f:
+with open(YEAR + '/Termine.html', 'w') as f:
     todaystr = datetime.datetime.today().strftime('%d.%m.')
     yearstr = datetime.datetime.today().strftime('%Y')
     print(f'<h1>Sperrmülltermine Bonn {yearstr} ab {todaystr}</h1>', file = f)
     print(f'<ul>', file = f)
 
     for termin in termine:
-        foldername = termin.strftime('%Y-%m-%d')
+        foldername = YEAR + '/' + termin.strftime('%Y-%m-%d')
         
         if os.path.exists(foldername): # Nur erfolgreich verarbeitete
             terminstr = termin.strftime('%d.%m.%Y')
