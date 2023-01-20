@@ -10,6 +10,10 @@
         - Als CSV in UTF-8 speichern.
         - Einstellungen unten am Beginn des Codes prüfen/aktualisieren.
         - Profit!
+
+    2023:
+        - Zeichenkodierung UTF-8, keine Konvertierung nötig.
+        - Datenqualität: Spalten sind verrutscht. Workaround: Im CSV in einem Texteditor ';?;' löschen.     
 '''
 
 import os
@@ -20,29 +24,60 @@ import folium
 import re
 import xml.etree.ElementTree as ET
 
+# Einen Excel-Spaltennamen in einen 0-basierten numerischen Index wandeln.
+def col2num(col):
+    num = 0
+    for c in col:
+        if c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+            num = num * 26 + (ord(c.upper()) - ord('A')) + 1
+    return num-1
+
 # Einstellungen ab hier:
 
-YEAR = '2022'
+YEAR = '2023'
 
 # Dateiname des aktuellen CSV-Downloads:
-CSV_FILENAME = 'ABFUHRTERMINE2022.csv'
+CSV_FILENAME = 'ABFUHRTERMINE' + YEAR + '.csv'
 
 # Spaltenindizes im CSV:
-COL_TYP = 14        # Spalte in der der Abfuhrtyp steht. Wir suchen "Sperrmüll"
-COL_TERMIN_00 = 56  # Spalte in der der erste Abfuhrtermin steht, Annahme: Der Rest nach rechts sind weitere Termine 
+COL_TYP = col2num('N') # Spalte in der der Abfuhrtyp steht. Wir suchen "Sperrmüll"
+COL_TERMIN_00 = col2num('AT')  # Spalte in der der erste Abfuhrtermin steht, Annahme: Der Rest nach rechts sind weitere Termine 
 
-COL_STRASSE = 24    
-COL_ORT = 25
-COL_PLZ = 27
-COL_HAUSNUMMER_GERADE_AB = 28
+COL_STRASSE = col2num('Y')    
+COL_ORT = col2num('Z')
+COL_PLZ = col2num('AB')
+COL_HAUSNUMMER_GERADE_AB = col2num('AC')
 COL_HAUSNUMMER_GERADE_BIS = COL_HAUSNUMMER_GERADE_AB + 1
 
-COL_HAUSNUMMER_UNGERADE_AB = 30
+COL_HAUSNUMMER_UNGERADE_AB = col2num('AE')
 COL_HAUSNUMMER_UNGERADE_BIS = COL_HAUSNUMMER_UNGERADE_AB + 1
 
 # Die Daten sagen 1-9999 bzw 2-9998 wenn die ganze Straße gemeint ist. Um nicht alle vergeblich
 # abzufragen hier eine willkürlich gewählte Obergrenze die auf "ab" aufgeschlagen wird.
 MAX_HAUSNUMMER_FOR_GEOLOCATION = 100
+
+# Liste aller Abfuhrtermine als HTML-Fragment mit Links auf die Karte und andere Ausgaben speichern.
+# Achtung: Dies schreibt die ganze Liste neu und fügt dabei "nebenbei" den neu geschriebenen Tag hinzu.
+def saveTermine():
+    with open(YEAR + '/Termine.html', 'w') as f:
+        todaystr = datetime.datetime.today().strftime('%d.%m.')
+        yearstr = datetime.datetime.today().strftime('%Y')
+        print(f'<h1>Sperrmülltermine Bonn {yearstr} ab {todaystr}</h1>', file = f)
+        print(f'<ul>', file = f)
+
+        for termin in termine:
+            foldername = termin.strftime('%Y-%m-%d')
+
+            if os.path.exists(termin.strftime('%Y') + '\\' + foldername): # Nur erfolgreich verarbeitete
+                terminstr = termin.strftime('%d.%m.%Y')
+                print(f'  <li>', file = f)
+                print(f'    <span>{terminstr}: </span>', file = f)
+                print(f'    <a href="{foldername}/Karte.html">Karte</a> - ', file = f)
+                print(f'    <a href="{foldername}/Adressen.txt">Adressen</a> - ', file = f)
+                print(f'    <a href="{foldername}/Koordinaten.txt">Koordinaten</a>', file = f)          
+                print(f'  </li>', file = f)
+
+        print(f'</ul>', file = f)
 
 # Open Street Map Karte parsen. OSM-Map.xml enthält einen großzügigen Bereich rund um
 # das interessante Gebiet. Wir extrahieren alle Adressen daraus und ordnen jeder eine
@@ -63,116 +98,118 @@ nodes = {}
 addresses = {}
 streetranges = {}
 
-print('OSM XML parsen...')
-tree = ET.parse('OSM-Map.xml')
-root = tree.getroot()
+if False:
+    print('OSM XML parsen...')
+    tree = ET.parse('OSM-Map.xml')
+    root = tree.getroot()
 
-print('OSM Adressen extrahieren...')
-def extractAddr(elem):
-    addr = {}
-    for tag in elem.findall('tag'): 
-        if tag.attrib['k'] == 'addr:city':
-            addr['city'] = tag.attrib['v']
-        elif tag.attrib['k'] == 'addr:street':
-            addr['street'] = tag.attrib['v']
-        elif tag.attrib['k'] == 'addr:postcode':
-            addr['postcode'] = tag.attrib['v']
-        elif tag.attrib['k'] == 'addr:housenumber':
-            addr['housenumber'] = tag.attrib['v']
-    return addr
+    print('OSM Adressen extrahieren...')
+    def extractAddr(elem):
+        addr = {}
+        for tag in elem.findall('tag'): 
+            if tag.attrib['k'] == 'addr:city':
+                addr['city'] = tag.attrib['v']
+            elif tag.attrib['k'] == 'addr:street':
+                addr['street'] = tag.attrib['v']
+            elif tag.attrib['k'] == 'addr:postcode':
+                addr['postcode'] = tag.attrib['v']
+            elif tag.attrib['k'] == 'addr:housenumber':
+                addr['housenumber'] = tag.attrib['v']
+        return addr
 
-def doAddAddr(addr, nr, coords):    
-    global addresses
-    global streetranges
+    def doAddAddr(addr, nr, coords):    
+        global addresses
+        global streetranges
 
-    a = f'{addr["street"]} {nr}, {addr["postcode"]} {addr["city"]}'
-    if not a in addresses:
-        # Eine frische Adresse.
-        addresses[a] = []
-    
-    # Ein neuer Koordinatenpunkt für eine Adresse.
-    addresses[a] = addresses[a] + coords
-
-    # Hausnummernbereich für diese Straße aktualisieren.
-    if addr["street"] in streetranges:
-        minh, maxh = streetranges[addr["street"]]
-        minh = min(minh, nr)
-        maxh = max(maxh, nr)     
-    else:
-        minh, maxh = (nr, nr)
+        a = f'{addr["street"]} {nr}, {addr["postcode"]} {addr["city"]}'
+        if not a in addresses:
+            # Eine frische Adresse.
+            addresses[a] = []
         
-    streetranges[addr["street"]] = (minh, maxh)    
+        # Ein neuer Koordinatenpunkt für eine Adresse.
+        addresses[a] = addresses[a] + coords
 
-def addAddr(addr, coords):
-    parts = re.split(',|;', addr['housenumber'])
+        # Hausnummernbereich für diese Straße aktualisieren.
+        if addr["street"] in streetranges:
+            minh, maxh = streetranges[addr["street"]]
+            minh = min(minh, nr)
+            maxh = max(maxh, nr)     
+        else:
+            minh, maxh = (nr, nr)
+            
+        streetranges[addr["street"]] = (minh, maxh)    
 
-    try:
-        for part in parts:
-            part = ''.join(ch for ch in part if ch.isdigit() or ch=='-')
-            h = part.split('-', 2)
-            h = [s for s in h if s]
-            if len(h) == 1:
-                h.append(h[0])
+    def addAddr(addr, coords):
+        parts = re.split(',|;', addr['housenumber'])
+
+        try:
+            for part in parts:
+                part = ''.join(ch for ch in part if ch.isdigit() or ch=='-')
+                h = part.split('-', 2)
+                h = [s for s in h if s]
+                if len(h) == 1:
+                    h.append(h[0])
+            
+                if h[0] == h[1]:
+                    doAddAddr(addr, int(h[0]), coords)
+                else:
+                    for nr in range(int(h[0]), int(h[1])):    
+                        doAddAddr(addr, nr, coords)
+        except:
+            print(f'{addr["street"]} {addr["housenumber"]}, {addr["postcode"]} {addr["city"]}')
+            raise
         
-            if h[0] == h[1]:
-                doAddAddr(addr, int(h[0]), coords)
-            else:
-                for nr in range(int(h[0]), int(h[1])):    
-                    doAddAddr(addr, nr, coords)
-    except:
-        print(f'{addr["street"]} {addr["housenumber"]}, {addr["postcode"]} {addr["city"]}')
-        raise
-    
-def isAddr(addr):
-    return ('street' in addr) and ('housenumber' in addr) and ('postcode' in addr) and ('city' in addr) and (addr['city'] == 'Bonn')
+    def isAddr(addr):
+        return ('street' in addr) and ('housenumber' in addr) and ('postcode' in addr) and ('city' in addr) and (addr['city'] == 'Bonn')
 
-for nodeelem in root.findall('node'):
-    coords = (float(nodeelem.attrib['lat']), float(nodeelem.attrib['lon']))
-    nodes[nodeelem.attrib['id']] = coords
-    addr = extractAddr(nodeelem)    
-    if isAddr(addr):
-        addAddr(addr, [coords])
+    for nodeelem in root.findall('node'):
+        coords = (float(nodeelem.attrib['lat']), float(nodeelem.attrib['lon']))
+        nodes[nodeelem.attrib['id']] = coords
+        addr = extractAddr(nodeelem)    
+        if isAddr(addr):
+            addAddr(addr, [coords])
 
-for wayelem in root.findall('way'):
-    addr = extractAddr(wayelem)    
-    if isAddr(addr):
-        # Alle nodes zum way finden, und deren Koordinaten zu einer Liste zusammenbauen.
-        coords = []
-        ids = []
-        for nodeelem in wayelem.findall('nd'):
-            id = nodeelem.attrib['ref']
-            if not id in ids:
-                ids.append(id)
-                coords.append(nodes[id])
+    for wayelem in root.findall('way'):
+        addr = extractAddr(wayelem)    
+        if isAddr(addr):
+            # Alle nodes zum way finden, und deren Koordinaten zu einer Liste zusammenbauen.
+            coords = []
+            ids = []
+            for nodeelem in wayelem.findall('nd'):
+                id = nodeelem.attrib['ref']
+                if not id in ids:
+                    ids.append(id)
+                    coords.append(nodes[id])
 
-        addAddr(addr, coords)
+            addAddr(addr, coords)
 
-# Liste der Koordinaten an jeder Addresse mitteln um einen einzelnen Datenpunkt zu erhalten.
-# TODO: Make into a pythonic one-liner :-)
-print('OSM Koordinaten mitteln...')
-for a in addresses.keys():    
-    p = (0.0, 0.0)
-    n = 0
-    for r in addresses[a]:
-        n += 1
-        p = (p[0] +  r[0], p[1] + r[1])
-    p = (p[0] / n, p[1] / n)
-    
-    addresses[a] = p
+    # Liste der Koordinaten an jeder Addresse mitteln um einen einzelnen Datenpunkt zu erhalten.
+    # TODO: Make into a pythonic one-liner :-)
+    print('OSM Koordinaten mitteln...')
+    for a in addresses.keys():    
+        p = (0.0, 0.0)
+        n = 0
+        for r in addresses[a]:
+            n += 1
+            p = (p[0] +  r[0], p[1] + r[1])
+        p = (p[0] / n, p[1] / n)
+        
+        addresses[a] = p
 
-print('OSM speichere Adressen...')
-ad = list(addresses.keys())
-ad.sort()
-with open(f'OSM-Adressen.txt', 'w') as f:
-    for a in ad:
-        print(a, addresses[a], file = f)
+    print('OSM speichere Adressen...')
+    ad = list(addresses.keys())
+    ad.sort()
+    with open(f'OSM-Adressen.txt', 'w') as f:
+        for a in ad:
+            print(a, addresses[a], file = f)
 
-print('OSM speichere Straßen...')
-sr = list(streetranges.keys())
-sr.sort()
-with open(f'OSM-Strassen.txt', 'w') as f:
-    for s in sr:
-        print(s, streetranges[s], file = f)
+    print('OSM speichere Straßen...')
+    sr = list(streetranges.keys())
+    sr.sort()
+    with open(f'OSM-Strassen.txt', 'w') as f:
+        for s in sr:
+            print(s, streetranges[s], file = f)
+# Ende comment-out-if für OSM-Daten
 
 # Gesamtliste aller Abfuhr-Termine leer initialisieren.
 termine = []
@@ -184,10 +221,9 @@ reader = csv.reader(csvfile, delimiter=';')
 
 # Für alle Zeilen..
 for row in reader:
-
+    
     # Filtern auf Sperrmülltermin.
     if row[COL_TYP] == 'Sperrmüll':
-
         # Alle Termin-Spalten:
         for termincol in range(COL_TERMIN_00, len(row)):
             terminstr = row[termincol]
@@ -198,6 +234,7 @@ for row in reader:
                     
                     # Termin in die Gesamtliste aller Termine eintragen.
                     if not termindt in termine:
+              
                         print(f'Neuer Sperrmülltermin gefunden: {terminstr}')
                         termine.append(termindt)
 
@@ -379,24 +416,8 @@ for maptermin in termine:
             for adresse in adressen:
                 print(adresse, file = f)
 
-        # Liste aller Abfuhrtermine als HTML-Fragment mit Links auf die Karte und andere Ausgaben speichern.
-        # Achtung: Dies schreibt die ganze Liste neu und fügt dabei "nebenbei" den neu geschriebenen Tag hinzu.
-        with open(YEAR + '/Termine.html', 'w') as f:
-            todaystr = datetime.datetime.today().strftime('%d.%m.')
-            yearstr = datetime.datetime.today().strftime('%Y')
-            print(f'<h1>Sperrmülltermine Bonn {yearstr} ab {todaystr}</h1>', file = f)
-            print(f'<ul>', file = f)
-
-            for termin in termine:
-                foldername = termin.strftime('%Y-%m-%d')
-                
-                if os.path.exists(foldername): # Nur erfolgreich verarbeitete
-                    terminstr = termin.strftime('%d.%m.%Y')
-                    print(f'  <li>', file = f)
-                    print(f'    <span>{terminstr}: </span>', file = f)
-                    print(f'    <a href="{foldername}/Karte.html">Karte</a> - ', file = f)
-                    print(f'    <a href="{foldername}/Adressen.txt">Adressen</a> - ', file = f)
-                    print(f'    <a href="{foldername}/Koordinaten.txt">Koordinaten</a>', file = f)          
-                    print(f'  </li>', file = f)
-
-            print(f'</ul>', file = f)
+        # Liste der Termine auch zwischendurch speichern.
+        saveTermine()
+        
+# Vollständige Liste der Termine speichern. 
+saveTermine()
