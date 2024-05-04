@@ -34,22 +34,22 @@ def col2num(col):
 
 # Einstellungen ab hier:
 
-YEAR = '2023'
+YEAR = '2024'
 
 # Dateiname des aktuellen CSV-Downloads:
-CSV_FILENAME = 'ABFUHRTERMINE' + YEAR + '.csv'
+CSV_FILENAME = 'Abfallplaner' + YEAR + '.csv'
 
 # Spaltenindizes im CSV:
 COL_TYP = col2num('N') # Spalte in der der Abfuhrtyp steht. Wir suchen "Sperrmüll"
-COL_TERMIN_00 = col2num('AT')  # Spalte in der der erste Abfuhrtermin steht, Annahme: Der Rest nach rechts sind weitere Termine 
+COL_TERMIN_00 = col2num('AS')  # Spalte in der der erste Abfuhrtermin steht, Annahme: Der Rest nach rechts sind weitere Termine 
 
-COL_STRASSE = col2num('Y')    
-COL_ORT = col2num('Z')
-COL_PLZ = col2num('AB')
-COL_HAUSNUMMER_GERADE_AB = col2num('AC')
+COL_STRASSE = col2num('X')    
+COL_ORT = col2num('Y')
+COL_PLZ = col2num('AA')
+COL_HAUSNUMMER_GERADE_AB = col2num('AB')
 COL_HAUSNUMMER_GERADE_BIS = COL_HAUSNUMMER_GERADE_AB + 1
 
-COL_HAUSNUMMER_UNGERADE_AB = col2num('AE')
+COL_HAUSNUMMER_UNGERADE_AB = col2num('AD')
 COL_HAUSNUMMER_UNGERADE_BIS = COL_HAUSNUMMER_UNGERADE_AB + 1
 
 # Die Daten sagen 1-9999 bzw 2-9998 wenn die ganze Straße gemeint ist. Um nicht alle vergeblich
@@ -98,7 +98,7 @@ nodes = {}
 addresses = {}
 streetranges = {}
 
-if False:
+if True:
     print('OSM XML parsen...')
     tree = ET.parse('OSM-Map.xml')
     root = tree.getroot()
@@ -216,12 +216,12 @@ termine = []
 
 # CSV einlesen.
 print(f'Öffne "{CSV_FILENAME}"...')
-csvfile = open(CSV_FILENAME, newline='')
-reader = csv.reader(csvfile, delimiter=';')
+csvfile = open(CSV_FILENAME, newline='', encoding="utf8")
+reader = csv.reader(csvfile, delimiter='\t')
 
 # Für alle Zeilen..
 for row in reader:
-    
+
     # Filtern auf Sperrmülltermin.
     if row[COL_TYP] == 'Sperrmüll':
         # Alle Termin-Spalten:
@@ -267,7 +267,7 @@ for maptermin in termine:
     if os.path.isdir(foldername):
         # Wenn es den Ordner schon gibt, glauben wir, dass der Termin schon verarbeitet wurde.
         print('Already processed')
-    elif maptermin < datetime.datetime.today():
+    elif False: # maptermin < datetime.datetime.today():
         # Uns interessiert hier nur die Zukunft.
         print('In the past')
     else:
@@ -278,8 +278,8 @@ for maptermin in termine:
         coordinates = []
 
         # CSV-Datei öffnen und lesen.
-        csvfile = open(CSV_FILENAME, newline='')
-        reader = csv.reader(csvfile, delimiter=';')
+        csvfile = open(CSV_FILENAME, newline='', encoding="utf8")
+        reader = csv.reader(csvfile, delimiter='\t')
 
         # Für alle Zeilen..
         for row in reader:
